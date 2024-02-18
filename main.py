@@ -23,7 +23,7 @@ bot = commands.Bot(
 
 fight_room = None
 fighterlist = dict()
-all_set = False #swtiches to true if a loop thru all fighter states returns all true
+acted_list = dict() #another dict to check if a player acting has already done theirnturn, and so we dont have to check state variable for Ready
 
 class Fighter:
     def __init__(self, user, name, movelist, HP=100, state="Ready"):
@@ -90,39 +90,54 @@ async def duel(call: discord.Interaction, target: discord.Member):
 
 
 #in duel moves----------------
+        
+def check_can_act(name): #not actually used anywhere, since it'd prevent players from changing their mind, but leaving it in in case we need it later
+    global acted_list
+    if acted_list[name] != None:
+        return True
+
+def check_all_set(name, fighter):
+    global acted_list
+    acted_list[name] = fighter
+
+def calculate_damage(move, target): #modifications to attack attributes are done outside
+    if move.accuracy >= random.randrange(0,100): #first, check if attack connects
+    else:
+        return "Miss" #miss    
+
+
 #once all players have acted, execute turn, function might need to be defined higher in text
-#executes all activities once they're all ready      
-async def turn_execute(): #include check that makes this execute once all players are ready, could make execute a slash command, too
-    if (fighterlist != None) and all_set == True: #check a fight is on and all_set is true
-        for name, fighter in fighterlist.items():
+#executes all activities once they're all ready 
+             
+async def turn_execute(): 
+    if (fighterlist != None) and len(acted_list) == len(fighterlist): #check a fight is on and that all the players in the fight have acted
+        for name, fighter in fighterlist.items(): #ATTACK LOOP HAPPENS FIRST
             if "Attacking" in fighter.state: #we don't care about anyone not attacking until the attacks are done
-                move = fighter.state.lower().split(' ')[1]
+                move = fullmovelist[fighter.state.lower().split(' ')[1]]
                 target = fighterlist[fighter.state.split(' ')[2]]
-                match move:
-                    case "strike":                    
-                        match target.state:
-                            case "Blocking":
-                                # blocked
-                            case "Dodging":
-                                #dodged
-                            case _:
-                                #normal damage
-                            
-                        fullmovelist[move]
+                match target.state:
+                    case "Blocking":
+                        move.damage = move.damage * move.penetration #reduces damage depending on its penetration
+                        calculate_damage()
 
-        for name, fighter in fighterlist.items(): #reset states at end of round
-            fighter.state = "Ready"
+                    case "Dodging":
+                        
+                    case "Staggered": #dodged but no melee attack was made, next attack has 100% hitrate?
+                        case _:
+                    case "Vulnerable": #happens when melee attack is dodged, next attack is guaranteed crit if it hits
+                        case _:
+                    case _: #all other states that are treated the same eg charging, attacking, default, whatever
+                        case _:
+        
+        for name, fighter in fighterlist.items(): #NEXT IS STATUS UPDATE LOOP            
+            match fighter.state:
+                case "Charging":
+                    #charge all
+                case 
+                        
+        acted_list.clear()
 
 
-def check_all_set():
-    global all_set
-    for name, fighter in fighterlist.items(): #all_set update
-        if fighter.state == "Ready":
-            all_set = False
-            break
-    
-    else: #dude... I don't even wanna know why this shit works, else statements in for loops happen if no break statement is reached
-        all_set = True
 
 
 @bot.tree.command(
@@ -137,7 +152,7 @@ async def attack(call: discord.Interaction, victim: discord.Member, move: str):
             if fighterlist[victim.name] != None: #check target is in fight
                 target = fighterlist[victim.name]
 
-                if move in player.movelist: #check move is in player move list
+                if move in player.movelist: #check move is in player move list, how are we checking for charge?
                     await call.response.send_message(f"You prepare to attack {target.name} with {move}!", ephemeral=True)
                     player.state = f"Attacking {move} {target.name}" #so we can transfer what move is being used in the same variable
                     
