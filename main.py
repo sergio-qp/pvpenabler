@@ -16,7 +16,7 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(
-     command_prefix="!",
+     command_prefix="/",
      case_insensitive=True,
      intents=intents)
 # tree = app_commands.CommandTree(client)
@@ -96,12 +96,9 @@ def check_can_act(name): #not actually used anywhere, since it'd prevent players
     if acted_list[name] != None:
         return True
 
-def check_all_set(name, fighter):
-    global acted_list
-    acted_list[name] = fighter
-
-def calculate_damage(move, target): #modifications to attack attributes are done outside
+async def calculate_damage(move, target): #modifications to attack attributes are done outside
     if move.accuracy >= random.randrange(0,100): #first, check if attack connects
+        target.HP = target.HP - move.damage
     else:
         return "Miss" #miss    
 
@@ -109,34 +106,46 @@ def calculate_damage(move, target): #modifications to attack attributes are done
 #once all players have acted, execute turn, function might need to be defined higher in text
 #executes all activities once they're all ready 
              
-async def turn_execute(): 
+async def turn_execute(call): 
     if (fighterlist != None) and len(acted_list) == len(fighterlist): #check a fight is on and that all the players in the fight have acted
-        for name, fighter in fighterlist.items(): #ATTACK LOOP HAPPENS FIRST
+        for name, fighter in acted_list.items(): #ATTACK LOOP HAPPENS FIRST
             if "Attacking" in fighter.state: #we don't care about anyone not attacking until the attacks are done
-                move = fullmovelist[fighter.state.lower().split(' ')[1]]
+                move = fullmovelist[fighter.state.lower().split(' ')[1]] #these are gonna need error checking
                 target = fighterlist[fighter.state.split(' ')[2]]
                 match target.state:
                     case "Blocking":
-                        move.damage = move.damage * move.penetration #reduces damage depending on its penetration
-                        calculate_damage()
-
-                    case "Dodging":
-                        
-                    case "Staggered": #dodged but no melee attack was made, next attack has 100% hitrate?
-                        case _:
+                        move.damage = move.damage * move.penetration #reduces damage depending on its penetration                        
+                    case "Dodging": #unless the move was ranged, do no damage and change states, add to counter if a dodge has happened
+                        if move.ranged == 0:
+                            move.accuracy = 0
+                    case "Staggered": #dodged but no melee attack was made, next attack has 100% hitrate
+                        move.accuracy = 100
                     case "Vulnerable": #happens when melee attack is dodged, next attack is guaranteed crit if it hits
-                        case _:
-                    case _: #all other states that are treated the same eg charging, attacking, default, whatever
-                        case _:
+                        move.critrate = 100
+                await calculate_damage(move,target) #calculate damage after state effects
+            await call.channel.send("Turn over") 
+            
         
         for name, fighter in fighterlist.items(): #NEXT IS STATUS UPDATE LOOP            
             match fighter.state:
                 case "Charging":
-                    #charge all
-                case 
-                        
+                    fighter.movelist = fullmovelist #i THINK this should reset all charges
+                case "Dodging": #if name not in the list of targets of actedlist, put in stagger
+                    t_count = 0
+                    for attacker, actor in acted_list.items():
+                        if actor.target == name:
+                            t_count += 1
+                    
+                    if t_count == 0: #how do we reset everything but staggered states
+                        fighter.state="Staggered"
+
         acted_list.clear()
 
+
+async def check_all_set(name, fighter, call):
+    global acted_list
+    acted_list[name] = fighter
+    await turn_execute(call) #it'll process as soon as actedlist fills
 
 
 
@@ -152,11 +161,13 @@ async def attack(call: discord.Interaction, victim: discord.Member, move: str):
             if fighterlist[victim.name] != None: #check target is in fight
                 target = fighterlist[victim.name]
 
-                if move in player.movelist: #check move is in player move list, how are we checking for charge?
-                    await call.response.send_message(f"You prepare to attack {target.name} with {move}!", ephemeral=True)
-                    player.state = f"Attacking {move} {target.name}" #so we can transfer what move is being used in the same variable
-                    
-                    check_all_set()
+                if move in player.movelist.keys(): #check move is in player move list, how are we checking for charge?
+                    if player.movelist[move].charged >= 0:
+                        await call.response.send_message(f"You prepare to attack {target.name} with {move}!", ephemeral=True)
+                        player.state = f"Attacking {move} {target.name}" #so we can transfer what move is being used in the same variable
+                        await check_all_set(player.name,player,call)
+                    else:
+                        await call.response.send_message("It's out of charges!", ephemeral=True)
                 else:
                     await call.response.send_message("You don't have that move", ephemeral=True)
 
@@ -179,7 +190,7 @@ async def block(call: discord.Interaction):
             player = fighterlist[call.user.name]
             await call.response.send_message("You prepare to block", ephemeral=True)
             player.state = "Blocking"
-            check_all_set()
+            await check_all_set(player.name,player,call)
         else:
             await call.response.send_message("You're not in this fight", ephemeral=True)
 
@@ -197,7 +208,7 @@ async def dodge(call: discord.Interaction):
             player = fighterlist[call.user.name]
             await call.response.send_message("You prepare to dodge", ephemeral=True)
             player.state = "Dodging"
-            check_all_set()
+            await check_all_set(player.name,player,call)
         else:
             await call.response.send_message("You're not in this fight", ephemeral=True)
 
@@ -208,7 +219,7 @@ async def dodge(call: discord.Interaction):
 
 @bot.tree.command(
     name="charge",
-    description="Charge, refilling all your special attacks"
+    description="Charge, refilling all your special moves"
 )
 async def charge(call: discord.Interaction):
     if bool(fighterlist) != False: #check if list is empty, to see if fight exists
@@ -216,7 +227,7 @@ async def charge(call: discord.Interaction):
             player = fighterlist[call.user.name]
             await call.response.send_message("You prepare to charge", ephemeral=True)
             player.state = "Charging"
-            check_all_set()
+            await check_all_set(player.name,player,call)
         else:
             await call.response.send_message("You're not in this fight", ephemeral=True)
 
@@ -224,60 +235,22 @@ async def charge(call: discord.Interaction):
         await call.response.send_message("I mean... You could? If you wanted to?", ephemeral=True)
 
 
-
+@bot.command()
+async def sync(ctx):
+    print("sync command")
+    await bot.tree.sync()
+    await ctx.send('Command tree synced.')
 
 #dodge, has 1-2 turn cooldown, if opponent attacks while you were dodged, your next attack is a guaranteed crit if it connects
 #if your opponent was blocking or dodging, though, the next attack that targets you can't miss
     #i can use ephemeral commands to hide the player's inputs from each other
 
-
-
-
-
-
-
-
-
-
-@bot.command()
-@commands.guild_only()
-@commands.is_owner()
-async def sync(ctx: commands.Context, guilds: commands.Greedy[discord.Object], spec: Optional[Literal["~", "*", "^"]] = None) -> None:
-    if not guilds:
-        if spec == "~":
-            synced = await ctx.bot.tree.sync(guild=ctx.guild)
-        elif spec == "*":
-            ctx.bot.tree.copy_global_to(guild=ctx.guild)
-            synced = await ctx.bot.tree.sync(guild=ctx.guild)
-        elif spec == "^":
-            ctx.bot.tree.clear_commands(guild=ctx.guild)
-            await ctx.bot.tree.sync(guild=ctx.guild)
-            synced = []
-        else:
-            synced = await ctx.bot.tree.sync()
-
-        await ctx.send(
-            f"Synced {len(synced)} commands {'globally' if spec is None else 'to the current guild.'}"
-        )
-        return
-
-    ret = 0
-    for guild in guilds:
-        try:
-            await ctx.bot.tree.sync(guild=guild)
-        except discord.HTTPException:
-            pass
-        else:
-            ret += 1
-
-    await ctx.send(f"Synced the tree to {ret}/{len(guilds)}.")
-
 @bot.event
 async def on_ready():
-    # await bot.tree.sync()
+    # await bot.tree.sync(guild=discord.Object(id="1128853398742110271"))
     print(f'Logged in as {bot.user}')
     #maybe we can have the check thing going on here, who knows
-    turn_execute()
+    
 
 
 bot.run(token)
