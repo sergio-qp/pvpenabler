@@ -1,7 +1,7 @@
 import os
 import discord
 import random
-from movelist import fullmovelist
+from movelist import fullmovelist, Move
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
@@ -26,11 +26,12 @@ fighterlist = dict()
 acted_list = dict() #another dict to check if a player acting has already done theirnturn, and so we dont have to check state variable for Ready
 
 class Fighter:
-    def __init__(self, user, name, movelist, HP=100, state="Ready"):
+    def __init__(self, user, name, movelist, HP=100, charge=1, state="Ready"):
         self.user = user
         self.name = name
         self.movelist = movelist
         self.HP = HP
+        self.charge = charge
         self.state = state
 
 
@@ -96,40 +97,63 @@ def check_can_act(name): #not actually used anywhere, since it'd prevent players
     if acted_list[name] != None:
         return True
 
-async def calculate_damage(move, target): #modifications to attack attributes are done outside
+async def calculate_damage(call, move, target): #modifications to attack attributes are done outside
     if move.accuracy >= random.randrange(0,100): #first, check if attack connects
-        target.HP = target.HP - move.damage
+        if move.critrate >= random.randrange(0,100): #then, check for crit
+            move.damage = move.damage * random.randrange(1.4,1.8)
+            target.HP = target.HP - move.damage
+            await call.channel.send(f"Critical hit! {target.name} takes a whopping {move.damage} points of damage!")
+        else:
+            target.HP = target.HP - move.damage
+            await call.channel.send(f"{target.name} takes {move.damage} points of damage!")
     else:
-        return "Miss" #miss    
+        await call.channel.send(f" A miss! The {move.name} whizzes past {target.name}!") 
 
 
 #once all players have acted, execute turn, function might need to be defined higher in text
 #executes all activities once they're all ready 
+#add check health/charges slash action
              
 async def turn_execute(call): 
+    global fighterlist
+    global acted_list
     if (fighterlist != None) and len(acted_list) == len(fighterlist): #check a fight is on and that all the players in the fight have acted
         for name, fighter in acted_list.items(): #ATTACK LOOP HAPPENS FIRST
             if "Attacking" in fighter.state: #we don't care about anyone not attacking until the attacks are done
-                move = fullmovelist[fighter.state.lower().split(' ')[1]] #these are gonna need error checking
+                move = fighter.movelist[fighter.state.lower().split(' ')[1]] #these are gonna need error checking
                 target = fighterlist[fighter.state.split(' ')[2]]
+
+                await call.channel.send(f"{name} attacks {target.name} with a {fighter.state.lower().split(' ')[1]}!") 
+                #add extra check for hyperdodge to only work if the player has been attacked
                 match target.state:
                     case "Blocking":
-                        move.damage = move.damage * move.penetration #reduces damage depending on its penetration                        
+                        move.damage = move.damage * move.penetration #reduces damage depending on its penetration
+                        await call.channel.send(f"But {target.name} is blocking!") 
                     case "Dodging": #unless the move was ranged, do no damage and change states, add to counter if a dodge has happened
                         if move.ranged == 0:
                             move.accuracy = 0
+                            await call.channel.send(f"But {target.name} dodged it!")
+                        else:
+                            await call.channel.send(f"Egads! {target.name} didn't move fast enough!")
+                    case "H-Dodge":
+                        move.accuracy = 0
+                        await call.channel.send(f"But {target.name} is already behind you! A counterattack!")
+                        target = fighter
+                        move = Move("hyperdodge",15,95,10,0.60,1,0)
                     case "Staggered": #dodged but no melee attack was made, next attack has 100% hitrate
                         move.accuracy = 100
                     case "Vulnerable": #happens when melee attack is dodged, next attack is guaranteed crit if it hits
                         move.critrate = 100
-                await calculate_damage(move,target) #calculate damage after state effects
-            await call.channel.send("Turn over") 
+                        await call.channel.send(f"{target.name} is wide open!") 
+                
+                await calculate_damage(call,move,target) #calculate damage after state effects
+                            
             
         
         for name, fighter in fighterlist.items(): #NEXT IS STATUS UPDATE LOOP            
             match fighter.state:
                 case "Charging":
-                    fighter.movelist = fullmovelist #i THINK this should reset all charges
+                    fighterlist[name].movelist = fullmovelist #i THINK this should reset all charges
                 case "Dodging": #if name not in the list of targets of actedlist, put in stagger
                     t_count = 0
                     for attacker, actor in acted_list.items():
@@ -137,8 +161,10 @@ async def turn_execute(call):
                             t_count += 1
                     
                     if t_count == 0: #how do we reset everything but staggered states
-                        fighter.state="Staggered"
+                        fighterlist[name].state="Staggered"
+                        await call.channel.send(f"Nobody attacked {name}, they're staggered!") 
 
+        await call.channel.send("Turn over") 
         acted_list.clear()
 
 
@@ -154,6 +180,7 @@ async def check_all_set(name, fighter, call):
     description="Attack your opponent, dealing damage"
 )
 async def attack(call: discord.Interaction, victim: discord.Member, move: str):
+    move = move.lower()
     if bool(fighterlist) != False: #check if list is empty, to see if fight exists
         if fighterlist[call.user.name] != None: #check player is in fight
             player = fighterlist[call.user.name]
@@ -215,7 +242,39 @@ async def dodge(call: discord.Interaction):
     else: #check for in a fight
         await call.response.send_message("Sure. You dodge. Nothing attacks you.", ephemeral=True)
 
+@bot.tree.command(
+    name="hyperdodge",
+    description="Dodge harder, avoiding and countering any attacks, but requires charge and risks a counterattack"
+)
+async def hyperdodge(call: discord.Interaction):
+    if bool(fighterlist) != False: #check if list is empty, to see if fight exists
+        if fighterlist[call.user.name] != None: #check player is in fight
+            player = fighterlist[call.user.name]
+            await call.response.send_message("You prepare a hyperdodge", ephemeral=True)
+            player.state = "H-Dodge"
+            await check_all_set(player.name,player,call)
+        else:
+            await call.response.send_message("You're not in this fight", ephemeral=True)
 
+    else: #check for in a fight
+        await call.response.send_message("Sure. You dodge hard as fuck. Nothing attacks you.", ephemeral=True)
+
+# @bot.tree.command(
+#     name="boost",
+#     description="Overdrive, take two turns at once, but become staggered for the next and consumes a charge"
+# )
+# async def boost(call: discord.Interaction):
+#     if bool(fighterlist) != False: #check if list is empty, to see if fight exists
+#         if fighterlist[call.user.name] != None: #check player is in fight
+#             player = fighterlist[call.user.name]
+#             await call.response.send_message("You prepare to dodge", ephemeral=True)
+#             player.state = "Dodging"
+#             await check_all_set(player.name,player,call)
+#         else:
+#             await call.response.send_message("You're not in this fight", ephemeral=True)
+
+#     else: #check for in a fight
+#         await call.response.send_message("Sure. You dodge. Nothing attacks you.", ephemeral=True)
 
 @bot.tree.command(
     name="charge",
